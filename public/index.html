@@ -67,35 +67,40 @@
 
         <div class="panel-section">
           <h2 class="panel-title">Talk Controls</h2>
-          <p class="panel-hint">Click to record, click again to send</p>
-          
-          <button id="talkClaude" class="talk-control" disabled>
-            <div class="talk-header">
-              <span class="talk-icon">🤖</span>
-              <span class="talk-name">Claude</span>
-              <span class="talk-role">(Co-host)</span>
-            </div>
-            <div class="talk-labels">
-              <span class="label idle">Ready to Record</span>
-              <span class="label recording">🔴 Recording... Click to Send</span>
-              <span class="label sending">⏳ Processing...</span>
-            </div>
-            <div class="talk-status" id="claudeStatus">Idle</div>
-          </button>
+          <p class="panel-hint">Hands-free mode is active — speak or click any co-host to redirect the conversation at any moment.</p>
 
-          <button id="talkGuest" class="talk-control" disabled>
-            <div class="talk-header">
-              <span class="talk-icon">💬</span>
-              <span class="talk-name">Guest AI</span>
-              <span class="talk-role">(Interviewee)</span>
-            </div>
-            <div class="talk-labels">
-              <span class="label idle">Ready to Record</span>
-              <span class="label recording">🔴 Recording... Click to Send</span>
-              <span class="label sending">⏳ Processing...</span>
-            </div>
-            <div class="talk-status" id="guestStatus">Idle</div>
-          </button>
+          <div class="hands-free-note">
+            <span class="note-icon">👐</span>
+            <span>Jump in whenever you like. We'll detect your voice, let the AIs interrupt each other, and keep everyone talking freely.</span>
+          </div>
+
+            <button id="talkClaude" class="talk-control" disabled>
+              <div class="talk-header">
+                <span class="talk-icon">🤖</span>
+                <span class="talk-name">Claude</span>
+                <span class="talk-role">(Co-host)</span>
+              </div>
+              <div class="talk-labels">
+                <span class="label idle">Waiting for your voice</span>
+                <span class="label recording">🔴 Listening automatically…</span>
+                <span class="label sending">⏳ Processing response…</span>
+              </div>
+              <div class="talk-status" id="claudeStatus">Idle</div>
+            </button>
+
+            <button id="talkGuest" class="talk-control" disabled>
+              <div class="talk-header">
+                <span class="talk-icon">💬</span>
+                <span class="talk-name">Guest AI</span>
+                <span class="talk-role">(Interviewee)</span>
+              </div>
+              <div class="talk-labels">
+                <span class="label idle">Waiting for your voice</span>
+                <span class="label recording">🔴 Listening automatically…</span>
+                <span class="label sending">⏳ Processing response…</span>
+              </div>
+              <div class="talk-status" id="guestStatus">Idle</div>
+            </button>
         </div>
 
         <div class="panel-section">
