@@ -5,7 +5,8 @@
   "main": "server/index.js",
   "scripts": {
     "start": "node server/index.js",
-    "dev": "NODE_ENV=development node server/index.js"
+    "dev": "NODE_ENV=development node server/index.js",
+    "test": "jest"
   },
   "keywords": [
     "anthropic",
@@ -23,5 +24,8 @@
     "express": "^4.19.2",
     "multer": "^2.0.2",
     "openai": "^6.3.0"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0"
   }
 }
