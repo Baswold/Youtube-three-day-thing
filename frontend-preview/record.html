@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Recording View • AI Orbs</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body class="record-mode">
+  <main class="record-stage">
+    <div class="record-orb-grid">
+      <section class="record-orb" data-orb-target="claude">
+        <canvas class="monitor-canvas" width="600" height="600" aria-hidden="true"></canvas>
+        <p class="record-label" aria-live="polite">Claude</p>
+      </section>
+      <section class="record-orb" data-orb-target="guest">
+        <canvas class="monitor-canvas" width="600" height="600" aria-hidden="true"></canvas>
+        <p class="record-label" aria-live="polite">Guest AI</p>
+      </section>
+    </div>
+    <a class="record-exit" href="index.html">← Back to studio controls</a>
+  </main>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
