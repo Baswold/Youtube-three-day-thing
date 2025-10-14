@@ -1,0 +1,27 @@
+{
+  "name": "three-way-ai-director",
+  "version": "0.1.0",
+  "description": "MVP web app for host-directed multi-AI conversations",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "NODE_ENV=development node server/index.js"
+  },
+  "keywords": [
+    "anthropic",
+    "openai",
+    "audio",
+    "tts",
+    "creator-tools"
+  ],
+  "author": "",
+  "license": "MIT",
+  "type": "commonjs",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.65.0",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "multer": "^2.0.2",
+    "openai": "^6.3.0"
+  }
+}

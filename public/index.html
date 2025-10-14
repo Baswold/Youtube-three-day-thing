@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Three-Way AI Director • YouTube Recording Studio</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app">
+    <!-- Header -->
+    <header class="header">
+      <div class="header-content">
+        <div class="logo">
+          <span class="logo-icon">🎬</span>
+          <div class="logo-text">
+            <h1>Three-Way AI Director</h1>
+            <p class="subtitle">YouTube Recording Studio</p>
+          </div>
+        </div>
+        <div class="header-actions">
+          <div class="info-pill">
+            <span>🎧</span>
+            <span>Use headphones</span>
+          </div>
+          <div id="systemStatus" class="status-indicator">
+            <span class="status-dot"></span>
+            <span class="status-text">Checking...</span>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <!-- Recording Studio Layout -->
+    <div class="studio-layout">
+      
+      <!-- Left Panel: Session Controls -->
+      <aside class="session-panel">
+        <div class="panel-section">
+          <h2 class="panel-title">Recording Session</h2>
+          
+          <div class="session-info">
+            <input 
+              type="text" 
+              id="sessionName" 
+              class="session-name-input" 
+              placeholder="Episode Name (optional)"
+              maxlength="50"
+            />
+            <div class="timer-display">
+              <span class="timer-label">Duration</span>
+              <span id="timer" class="timer-value">00:00</span>
+            </div>
+          </div>
+
+          <div class="primary-controls">
+            <button id="startSession" class="btn-primary btn-start">
+              <span class="btn-icon">●</span>
+              <span>Start Recording</span>
+            </button>
+            <button id="stopSession" class="btn-primary btn-stop" disabled>
+              <span class="btn-icon">■</span>
+              <span>Stop Recording</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="panel-section">
+          <h2 class="panel-title">Talk Controls</h2>
+          <p class="panel-hint">Click to record, click again to send</p>
+          
+          <button id="talkClaude" class="talk-control" disabled>
+            <div class="talk-header">
+              <span class="talk-icon">🤖</span>
+              <span class="talk-name">Claude</span>
+              <span class="talk-role">(Co-host)</span>
+            </div>
+            <div class="talk-labels">
+              <span class="label idle">Ready to Record</span>
+              <span class="label recording">🔴 Recording... Click to Send</span>
+              <span class="label sending">⏳ Processing...</span>
+            </div>
+            <div class="talk-status" id="claudeStatus">Idle</div>
+          </button>
+
+          <button id="talkGuest" class="talk-control" disabled>
+            <div class="talk-header">
+              <span class="talk-icon">💬</span>
+              <span class="talk-name">Guest AI</span>
+              <span class="talk-role">(Interviewee)</span>
+            </div>
+            <div class="talk-labels">
+              <span class="label idle">Ready to Record</span>
+              <span class="label recording">🔴 Recording... Click to Send</span>
+              <span class="label sending">⏳ Processing...</span>
+            </div>
+            <div class="talk-status" id="guestStatus">Idle</div>
+          </button>
+        </div>
+
+        <div class="panel-section">
+          <h2 class="panel-title">Recording Setup</h2>
+          <div class="recording-guide">
+            <p class="guide-text">
+              <strong>📹 Use external recording software</strong><br>
+              OBS Studio, ScreenFlow, or QuickTime
+            </p>
+            <div class="guide-steps">
+              <div class="guide-step">
+                <span class="step-number">1</span>
+                <span>Capture this window</span>
+              </div>
+              <div class="guide-step">
+                <span class="step-number">2</span>
+                <span>Record system audio</span>
+              </div>
+              <div class="guide-step">
+                <span class="step-number">3</span>
+                <span>Add your microphone</span>
+              </div>
+            </div>
+            <p class="guide-hint">Waveforms = AI visual avatars for your video!</p>
+          </div>
+          <div id="exportStatus" class="export-feedback"></div>
+        </div>
+      </aside>
+
+      <!-- Main Content: Waveforms & Transcript -->
+      <main class="main-content">
+        
+        <!-- AI Visual Avatars -->
+        <section class="audio-monitors">
+          <div class="avatars-header">
+            <h2 class="section-title">AI Co-Hosts</h2>
+            <p class="section-subtitle">Visual avatars for your AI conversation partners</p>
+          </div>
+          
+          <div class="monitor-grid two-column">
+            <div class="monitor-card" id="claudeWaveform">
+              <div class="monitor-header">
+                <div class="monitor-info">
+                  <span class="monitor-icon">🤖</span>
+                  <span class="monitor-name">Claude</span>
+                </div>
+                <span class="monitor-badge">CO-HOST</span>
+              </div>
+              <canvas class="monitor-canvas" width="500" height="500"></canvas>
+              <div class="monitor-footer">
+                <span class="activity-status" id="claudeActivity">Idle</span>
+              </div>
+            </div>
+
+            <div class="monitor-card" id="guestWaveform">
+              <div class="monitor-header">
+                <div class="monitor-info">
+                  <span class="monitor-icon">💬</span>
+                  <span class="monitor-name">Guest AI</span>
+                </div>
+                <span class="monitor-badge">GUEST</span>
+              </div>
+              <canvas class="monitor-canvas" width="500" height="500"></canvas>
+              <div class="monitor-footer">
+                <span class="activity-status" id="guestActivity">Idle</span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Transcript -->
+        <section class="transcript-section">
+          <div class="transcript-header">
+            <h2 class="section-title">Conversation Transcript</h2>
+            <span id="turnCount" class="turn-counter">0 turns</span>
+          </div>
+          <div id="log" class="transcript-log"></div>
+          <div class="transcript-empty" id="transcriptEmpty">
+            <span class="empty-icon">💬</span>
+            <p>Your conversation will appear here</p>
+          </div>
+        </section>
+
+      </main>
+    </div>
+  </div>
+
+  <template id="logEntry">
+    <div class="log-entry">
+      <div class="log-avatar"></div>
+      <div class="log-content">
+        <div class="log-header">
+          <span class="log-speaker"></span>
+          <span class="log-timestamp"></span>
+        </div>
+        <div class="log-text"></div>
+      </div>
+    </div>
+  </template>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
