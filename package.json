@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node server/index.js",
     "dev": "NODE_ENV=development node server/index.js",
-    "test": "jest"
+    "test": "jest",
+    "test:node": "node --test"
   },
   "keywords": [
     "anthropic",

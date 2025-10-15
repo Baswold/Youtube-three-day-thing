@@ -197,6 +197,24 @@ body {
   color: var(--fg-tertiary);
 }
 
+.hands-free-note {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem 1rem;
+  background: rgba(99, 102, 241, 0.12);
+  border: 1px solid rgba(99, 102, 241, 0.35);
+  border-radius: 12px;
+  color: var(--fg-secondary);
+  font-size: 0.875rem;
+  margin: 0 0 1.25rem 0;
+  line-height: 1.4;
+}
+
+.hands-free-note .note-icon {
+  font-size: 1.25rem;
+}
+
 .session-info {
   display: flex;
   flex-direction: column;
@@ -359,6 +377,11 @@ body {
 .talk-control:disabled {
   opacity: 0.4;
   cursor: not-allowed;
+}
+
+.talk-control.hands-free-mode:disabled {
+  opacity: 1;
+  cursor: default;
 }
 
 .talk-control.state-recording {

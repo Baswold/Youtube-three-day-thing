@@ -1,4 +1,8 @@
 // Simplified preview version - UI only, no backend calls
+const ORB_TARGETS = ['claude', 'guest'];
+const ORB_STORAGE_KEY = 'yt-three-day-orb-settings';
+const isRecordPage = document.body.classList.contains('record-mode');
+
 const startBtn = document.getElementById('startSession');
 const stopBtn = document.getElementById('stopSession');
 const talkClaudeBtn = document.getElementById('talkClaude');
@@ -10,15 +14,119 @@ const logContainer = document.getElementById('log');
 const logTemplate = document.getElementById('logEntry');
 const exportStatusEl = document.getElementById('exportStatus');
 
-const sessionNameInput = document.getElementById('sessionName');
 const systemStatusEl = document.getElementById('systemStatus');
 const turnCountEl = document.getElementById('turnCount');
 const transcriptEmptyEl = document.getElementById('transcriptEmpty');
 
-const claudeCanvas = document.querySelector('#claudeWaveform .monitor-canvas');
-const guestCanvas = document.querySelector('#guestWaveform .monitor-canvas');
-const claudeCtx = claudeCanvas.getContext('2d');
-const guestCtx = guestCanvas.getContext('2d');
+const orbStylePanel = document.getElementById('orbStylePanel');
+const toggleOrbPanelBtn = document.getElementById('toggleOrbPanel');
+
+const claudeHueInput = document.getElementById('claudeHue');
+const guestHueInput = document.getElementById('guestHue');
+const hueValueEls = {
+  claude: document.querySelector('.color-value[data-target="claude"]'),
+  guest: document.querySelector('.color-value[data-target="guest"]')
+};
+
+const orbSettings = loadOrbSettings();
+
+const orbRegistry = ORB_TARGETS.reduce((registry, target) => {
+  const container = document.querySelector(`[data-orb-target="${target}"]`);
+  const canvas = container?.querySelector('.monitor-canvas');
+
+  if (canvas) {
+    registry[target] = {
+      container,
+      canvas,
+      ctx: canvas.getContext('2d')
+    };
+  }
+
+  return registry;
+}, {});
+
+const hasRenderableOrbs = Object.keys(orbRegistry).length > 0;
+
+[['claude', claudeHueInput], ['guest', guestHueInput]].forEach(([target, input]) => {
+  if (!input) return;
+
+  const currentHue = orbSettings[target]?.hue ?? getDefaultOrbSettings()[target].hue;
+  input.value = String(currentHue);
+  updateSliderLabel(target, currentHue);
+
+  input.addEventListener('input', (event) => {
+    const value = Number(event.target.value);
+    updateOrbHue(target, value);
+    updateSliderLabel(target, value);
+    revealOrbPanel();
+  });
+
+  input.addEventListener('focus', () => {
+    revealOrbPanel();
+  });
+});
+
+if (toggleOrbPanelBtn && orbStylePanel) {
+  toggleOrbPanelBtn.addEventListener('click', () => {
+    const isOpen = orbStylePanel.classList.toggle('open');
+    toggleOrbPanelBtn.setAttribute('aria-expanded', String(isOpen));
+  });
+}
+
+window.addEventListener('storage', (event) => {
+  if (event.key !== ORB_STORAGE_KEY || !event.newValue) return;
+  try {
+    const parsed = JSON.parse(event.newValue);
+    const sanitized = sanitizeOrbSettings(parsed);
+    applyOrbSettings(sanitized, { syncInputs: true });
+  } catch (error) {
+    console.warn('Unable to apply shared orb settings', error);
+  }
+});
+
+applyOrbSettings(orbSettings, { syncInputs: false });
+
+function revealOrbPanel() {
+  if (!orbStylePanel || !toggleOrbPanelBtn) return;
+  if (!orbStylePanel.classList.contains('open')) {
+    orbStylePanel.classList.add('open');
+    toggleOrbPanelBtn.setAttribute('aria-expanded', 'true');
+  }
+}
+
+let resizeTimeout;
+
+function resizeCanvases() {
+  if (!hasRenderableOrbs) return;
+
+  const ratio = window.devicePixelRatio || 1;
+
+  Object.values(orbRegistry).forEach(({ canvas, container }) => {
+    if (!canvas) return;
+    const holder = container ?? canvas.parentElement;
+    if (!holder) return;
+
+    const rect = holder.getBoundingClientRect();
+    const availableWidth = rect.width || holder.offsetWidth || canvas.clientWidth || 320;
+    let size = availableWidth;
+
+    if (!isRecordPage) {
+      size = Math.min(size, 520);
+    }
+
+    canvas.style.width = `${size}px`;
+    canvas.style.height = `${size}px`;
+    canvas.width = Math.max(1, Math.round(size * ratio));
+    canvas.height = Math.max(1, Math.round(size * ratio));
+  });
+}
+
+if (hasRenderableOrbs) {
+  window.addEventListener('resize', () => {
+    clearTimeout(resizeTimeout);
+    resizeTimeout = setTimeout(resizeCanvases, 150);
+  });
+}
 
 let sessionTimer;
 let sessionStartTime;
@@ -28,36 +136,63 @@ let sessionActive = false;
 let turnCount = 0;
 let animationId;
 
-startBtn.addEventListener('click', startSession);
-stopBtn.addEventListener('click', stopSession);
-talkClaudeBtn.addEventListener('click', () => handleTalk('claude'));
-talkGuestBtn.addEventListener('click', () => handleTalk('guest'));
+if (startBtn) {
+  startBtn.addEventListener('click', startSession);
+}
 
-// Show ready status
-systemStatusEl.querySelector('.status-text').textContent = 'Preview Mode';
-systemStatusEl.classList.add('healthy');
-exportStatusEl.textContent = '👁️ UI Preview Mode - No backend required';
-exportStatusEl.style.color = 'var(--success)';
+if (stopBtn) {
+  stopBtn.addEventListener('click', stopSession);
+}
+
+if (talkClaudeBtn) {
+  talkClaudeBtn.addEventListener('click', () => handleTalk('claude'));
+}
+
+if (talkGuestBtn) {
+  talkGuestBtn.addEventListener('click', () => handleTalk('guest'));
+}
+
+if (systemStatusEl) {
+  const statusText = systemStatusEl.querySelector('.status-text');
+  if (statusText) {
+    statusText.textContent = 'Preview Mode';
+  }
+  systemStatusEl.classList.add('healthy');
+}
+
+if (exportStatusEl) {
+  exportStatusEl.textContent = '👁️ UI Preview Mode - No backend required';
+  exportStatusEl.style.color = 'var(--success)';
+}
 
 refreshTalkButtons();
+resizeCanvases();
 startAnimations();
 
 function startSession() {
-  if (sessionActive) return;
+  if (!startBtn || !stopBtn || sessionActive) return;
 
   startBtn.disabled = true;
-  exportStatusEl.textContent = '✨ Recording simulation active';
-  exportStatusEl.style.color = 'var(--success)';
+  if (exportStatusEl) {
+    exportStatusEl.textContent = '✨ Recording simulation active';
+    exportStatusEl.style.color = 'var(--success)';
+  }
   turnCount = 0;
-  turnCountEl.textContent = '0 turns';
-  logContainer.innerHTML = '';
+  if (turnCountEl) {
+    turnCountEl.textContent = '0 turns';
+  }
+  if (logContainer) {
+    logContainer.innerHTML = '';
+  }
   if (transcriptEmptyEl) {
     transcriptEmptyEl.style.display = 'flex';
   }
 
   sessionStartTime = Date.now();
   sessionTimer = setInterval(updateTimer, 500);
-  timerEl.textContent = '00:00';
+  if (timerEl) {
+    timerEl.textContent = '00:00';
+  }
 
   activeTarget = null;
   talkState = 'idle';
@@ -70,11 +205,15 @@ function startSession() {
 }
 
 function stopSession() {
-  if (!sessionActive) return;
+  if (!stopBtn || !sessionActive) return;
 
   stopBtn.disabled = true;
-  talkClaudeBtn.disabled = true;
-  talkGuestBtn.disabled = true;
+  if (talkClaudeBtn) {
+    talkClaudeBtn.disabled = true;
+  }
+  if (talkGuestBtn) {
+    talkGuestBtn.disabled = true;
+  }
 
   if (sessionTimer) {
     clearInterval(sessionTimer);
@@ -87,76 +226,142 @@ function stopSession() {
   refreshTalkButtons();
   setTargetStatus('claude', 'Idle', false);
   setTargetStatus('guest', 'Idle', false);
-  startBtn.disabled = false;
+  if (startBtn) {
+    startBtn.disabled = false;
+  }
 
-  exportStatusEl.textContent = '👁️ UI Preview Mode - No backend required';
-  exportStatusEl.style.color = 'var(--success)';
+  if (exportStatusEl) {
+    exportStatusEl.textContent = '👁️ UI Preview Mode - No backend required';
+    exportStatusEl.style.color = 'var(--success)';
+  }
 }
 
 function startAnimations() {
-  const claudeData = new Uint8Array(256);
-  const guestData = new Uint8Array(256);
+  if (!hasRenderableOrbs) return;
 
   const draw = () => {
     animationId = requestAnimationFrame(draw);
 
     // Generate some animated data
     const time = Date.now() / 1000;
-    const claudeLevel = sessionActive ? Math.sin(time * 2) * 0.3 + 0.3 : 0.1;
-    const guestLevel = sessionActive ? Math.cos(time * 1.5) * 0.3 + 0.3 : 0.1;
+    const isActive = sessionActive || isRecordPage;
+    const claudeLevel = isActive ? Math.sin(time * 2) * 0.3 + 0.35 : 0.12;
+    const guestLevel = isActive ? Math.cos(time * 1.5) * 0.3 + 0.35 : 0.12;
 
-    drawAnalyserWave(claudeLevel, claudeCtx, claudeCanvas, 'claude');
-    drawAnalyserWave(guestLevel, guestCtx, guestCanvas, 'guest');
+    drawAnalyserWave(claudeLevel, 'claude');
+    drawAnalyserWave(guestLevel, 'guest');
   };
 
   draw();
 }
 
-function drawAnalyserWave(normalizedLevel, ctx, canvas, speaker) {
-  // Orb settings based on speaker
-  let colors;
-  if (speaker === 'claude') {
-    colors = {
-      inner: ['#8b5cf6', '#a78bfa', '#c4b5fd'],
-      outer: ['rgba(139, 92, 246, 0.4)', 'rgba(167, 139, 250, 0.2)', 'rgba(196, 181, 253, 0.1)']
-    };
+function drawAnalyserWave(normalizedLevel, target) {
+  const orb = orbRegistry[target];
+  if (!orb) return;
+
+  const hue = orbSettings[target]?.hue ?? getDefaultOrbSettings()[target].hue;
+  const colors = getOrbColors(hue);
+  drawFluidOrb(orb.ctx, orb.canvas, normalizedLevel, colors);
+}
+
+function getOrbColors(hue) {
+  const normalizedHue = ((hue % 360) + 360) % 360;
+  const inner = [
+    hslToHex(normalizedHue, 80, 58),
+    hslToHex((normalizedHue + 12) % 360, 76, 68),
+    hslToHex((normalizedHue + 24) % 360, 72, 78)
+  ];
+
+  const outer = [
+    hslToRgba(normalizedHue, 82, 60, 0.45),
+    hslToRgba((normalizedHue + 12) % 360, 74, 70, 0.25),
+    hslToRgba((normalizedHue + 24) % 360, 70, 78, 0.1)
+  ];
+
+  return { inner, outer };
+}
+
+function hslToHex(h, s, l) {
+  const { r, g, b } = hslToRgb(h, s, l);
+  return `#${((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1)}`;
+}
+
+function hslToRgba(h, s, l, a) {
+  const { r, g, b } = hslToRgb(h, s, l);
+  return `rgba(${r}, ${g}, ${b}, ${a})`;
+}
+
+function hslToRgb(h, s, l) {
+  const saturation = s / 100;
+  const lightness = l / 100;
+  const chroma = (1 - Math.abs(2 * lightness - 1)) * saturation;
+  const hueSegment = h / 60;
+  const x = chroma * (1 - Math.abs((hueSegment % 2) - 1));
+  let r1 = 0;
+  let g1 = 0;
+  let b1 = 0;
+
+  if (hueSegment >= 0 && hueSegment < 1) {
+    r1 = chroma;
+    g1 = x;
+  } else if (hueSegment >= 1 && hueSegment < 2) {
+    r1 = x;
+    g1 = chroma;
+  } else if (hueSegment >= 2 && hueSegment < 3) {
+    g1 = chroma;
+    b1 = x;
+  } else if (hueSegment >= 3 && hueSegment < 4) {
+    g1 = x;
+    b1 = chroma;
+  } else if (hueSegment >= 4 && hueSegment < 5) {
+    r1 = x;
+    b1 = chroma;
   } else {
-    colors = {
-      inner: ['#ec4899', '#f472b6', '#f9a8d4'],
-      outer: ['rgba(236, 72, 153, 0.4)', 'rgba(244, 114, 182, 0.2)', 'rgba(249, 168, 212, 0.1)']
-    };
+    r1 = chroma;
+    b1 = x;
   }
 
-  drawFluidOrb(ctx, canvas, normalizedLevel, colors);
+  const match = lightness - chroma / 2;
+  const r = Math.round((r1 + match) * 255);
+  const g = Math.round((g1 + match) * 255);
+  const b = Math.round((b1 + match) * 255);
+
+  return { r, g, b };
 }
 
 function drawFluidOrb(ctx, canvas, normalizedLevel, colors) {
-  const centerX = canvas.width / 2;
-  const centerY = canvas.height / 2;
+  const ratio = window.devicePixelRatio || 1;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+
+  const width = canvas.width / ratio;
+  const height = canvas.height / ratio;
+  const centerX = width / 2;
+  const centerY = height / 2;
   const time = Date.now() / 1000;
 
-  // Clear canvas
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-  // Base orb size (responsive to audio)
-  const baseRadius = Math.min(canvas.width, canvas.height) * 0.35;
-  const pulseAmount = normalizedLevel * 8;
+  const ambientLevel = Math.max(0.08, normalizedLevel);
+  const baseRadius = Math.min(width, height) * 0.35;
+  const pulseAmount = ambientLevel * 12;
   const radius = baseRadius + pulseAmount;
 
-  // Create multiple layered gradients for depth
+  ctx.save();
   ctx.globalCompositeOperation = 'lighter';
-
-  // Outer glow layers
   for (let i = 3; i >= 1; i--) {
-    const glowRadius = radius * (1 + i * 0.15);
+    const glowRadius = radius * (1 + i * 0.18);
     const gradient = ctx.createRadialGradient(
-      centerX, centerY, radius * 0.1,
-      centerX, centerY, glowRadius
+      centerX,
+      centerY,
+      radius * 0.1,
+      centerX,
+      centerY,
+      glowRadius
     );
 
     gradient.addColorStop(0, colors.outer[0]);
-    gradient.addColorStop(0.4, colors.outer[1]);
-    gradient.addColorStop(0.8, colors.outer[2]);
+    gradient.addColorStop(0.45, colors.outer[1]);
+    gradient.addColorStop(0.85, colors.outer[2]);
     gradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
 
     ctx.fillStyle = gradient;
@@ -164,20 +369,25 @@ function drawFluidOrb(ctx, canvas, normalizedLevel, colors) {
     ctx.arc(centerX, centerY, glowRadius, 0, Math.PI * 2);
     ctx.fill();
   }
+  ctx.restore();
 
-  // Main orb with animated gradient
-  const angle = time * 0.5 + normalizedLevel * Math.PI;
-  const offsetX = Math.cos(angle) * radius * 0.3;
-  const offsetY = Math.sin(angle) * radius * 0.3;
+  ctx.save();
+  const angle = time * 0.65 + ambientLevel * Math.PI;
+  const offsetX = Math.cos(angle) * radius * 0.28;
+  const offsetY = Math.sin(angle) * radius * 0.28;
 
   const mainGradient = ctx.createRadialGradient(
-    centerX + offsetX, centerY + offsetY, 0,
-    centerX, centerY, radius
+    centerX + offsetX,
+    centerY + offsetY,
+    0,
+    centerX,
+    centerY,
+    radius
   );
 
   mainGradient.addColorStop(0, colors.inner[2]);
-  mainGradient.addColorStop(0.3, colors.inner[1]);
-  mainGradient.addColorStop(0.6, colors.inner[0]);
+  mainGradient.addColorStop(0.32, colors.inner[1]);
+  mainGradient.addColorStop(0.68, colors.inner[0]);
   mainGradient.addColorStop(1, colors.outer[0]);
 
   ctx.globalCompositeOperation = 'source-over';
@@ -185,56 +395,200 @@ function drawFluidOrb(ctx, canvas, normalizedLevel, colors) {
   ctx.beginPath();
   ctx.arc(centerX, centerY, radius, 0, Math.PI * 2);
   ctx.fill();
+  ctx.restore();
 
-  // Inner highlight (moving light source)
-  const highlightAngle = time * 0.8;
-  const highlightX = centerX + Math.cos(highlightAngle) * radius * 0.2;
-  const highlightY = centerY + Math.sin(highlightAngle) * radius * 0.2;
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.lineWidth = 1.2 + ambientLevel * 2.6;
+  ctx.lineCap = 'round';
+  const ringGradient = ctx.createLinearGradient(centerX - radius, centerY, centerX + radius, centerY);
+  ringGradient.addColorStop(0, colors.outer[1]);
+  ringGradient.addColorStop(0.5, colors.inner[1]);
+  ringGradient.addColorStop(1, colors.outer[0]);
+  const waveCount = 4;
+  for (let i = 0; i < waveCount; i++) {
+    const phase = time * 0.7 + i * 0.6;
+    const tilt = Math.sin(phase) * 0.35;
+    ctx.strokeStyle = ringGradient;
+    ctx.globalAlpha = 0.28 + (i / waveCount) * 0.2;
+    ctx.beginPath();
+    ctx.ellipse(
+      centerX,
+      centerY,
+      radius * (0.72 + i * 0.08),
+      radius * (0.68 + i * 0.07),
+      tilt,
+      0,
+      Math.PI * 2
+    );
+    ctx.stroke();
+  }
+  ctx.restore();
+
+  const highlightAngle = time * 1.1;
+  const highlightX = centerX + Math.cos(highlightAngle) * radius * 0.25;
+  const highlightY = centerY + Math.sin(highlightAngle) * radius * 0.25;
 
   const highlightGradient = ctx.createRadialGradient(
-    highlightX, highlightY, 0,
-    highlightX, highlightY, radius * 0.6
+    highlightX,
+    highlightY,
+    0,
+    highlightX,
+    highlightY,
+    radius * 0.7
   );
 
-  highlightGradient.addColorStop(0, 'rgba(255, 255, 255, 0.4)');
-  highlightGradient.addColorStop(0.5, 'rgba(255, 255, 255, 0.1)');
+  highlightGradient.addColorStop(0, 'rgba(255, 255, 255, 0.45)');
+  highlightGradient.addColorStop(0.5, 'rgba(255, 255, 255, 0.18)');
   highlightGradient.addColorStop(1, 'rgba(255, 255, 255, 0)');
 
+  ctx.save();
   ctx.globalCompositeOperation = 'lighter';
   ctx.fillStyle = highlightGradient;
   ctx.beginPath();
-  ctx.arc(highlightX, highlightY, radius * 0.6, 0, Math.PI * 2);
+  ctx.arc(highlightX, highlightY, radius * 0.7, 0, Math.PI * 2);
   ctx.fill();
+  ctx.restore();
 
-  // Add subtle particles for more fluid feel
-  if (normalizedLevel > 0.1) {
+  if (ambientLevel > 0.1) {
+    ctx.save();
     ctx.globalCompositeOperation = 'lighter';
-    const particleCount = Math.floor(normalizedLevel * 20);
+    const particleCount = Math.floor(ambientLevel * 24);
 
     for (let i = 0; i < particleCount; i++) {
-      const particleAngle = (time * 2 + i) % (Math.PI * 2);
-      const distance = radius * (0.5 + Math.random() * 0.5);
-      const px = centerX + Math.cos(particleAngle) * distance;
-      const py = centerY + Math.sin(particleAngle) * distance;
-      const particleSize = (1 + normalizedLevel * 2) * (0.5 + Math.random());
+      const particleAngle = time * 2 + (i / particleCount) * Math.PI * 2;
+      const distance = radius * (0.45 + Math.random() * 0.55);
+      const px = centerX + Math.cos(particleAngle + Math.random() * 0.4) * distance;
+      const py = centerY + Math.sin(particleAngle + Math.random() * 0.4) * distance;
+      const particleSize = (1 + ambientLevel * 2.5) * (0.4 + Math.random());
 
-      const particleGradient = ctx.createRadialGradient(px, py, 0, px, py, particleSize * 3);
+      const particleGradient = ctx.createRadialGradient(px, py, 0, px, py, particleSize * 4);
       particleGradient.addColorStop(0, colors.inner[1]);
       particleGradient.addColorStop(0.5, colors.outer[1]);
       particleGradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
 
       ctx.fillStyle = particleGradient;
       ctx.beginPath();
-      ctx.arc(px, py, particleSize * 3, 0, Math.PI * 2);
+      ctx.arc(px, py, particleSize * 4, 0, Math.PI * 2);
       ctx.fill();
     }
+    ctx.restore();
   }
 
   ctx.globalCompositeOperation = 'source-over';
 }
 
+function updateSliderLabel(target, value) {
+  const label = hueValueEls[target];
+  if (!label) return;
+  const defaults = getDefaultOrbSettings();
+  const fallback = defaults[target]?.hue ?? 0;
+  const hue = normalizeHueValue(value, orbSettings[target]?.hue ?? fallback);
+  label.textContent = `${Math.round(hue)}\u00B0`;
+}
+
+function updateOrbHue(target, value) {
+  const defaults = getDefaultOrbSettings();
+  const fallback = defaults[target]?.hue ?? 0;
+  const hue = normalizeHueValue(value, fallback);
+
+  if (!orbSettings[target]) {
+    orbSettings[target] = { hue };
+  } else {
+    orbSettings[target].hue = hue;
+  }
+
+  persistOrbSettings(orbSettings);
+}
+
+function applyOrbSettings(newSettings, { syncInputs = false } = {}) {
+  const defaults = getDefaultOrbSettings();
+
+  ORB_TARGETS.forEach((target) => {
+    const hue = normalizeHueValue(newSettings[target]?.hue, defaults[target].hue);
+
+    if (!orbSettings[target]) {
+      orbSettings[target] = { hue };
+    } else {
+      orbSettings[target].hue = hue;
+    }
+
+    if (syncInputs) {
+      const input = target === 'claude' ? claudeHueInput : guestHueInput;
+      if (input) {
+        input.value = String(hue);
+      }
+      updateSliderLabel(target, hue);
+    }
+  });
+}
+
+function loadOrbSettings() {
+  const defaults = getDefaultOrbSettings();
+
+  if (typeof window === 'undefined' || typeof localStorage === 'undefined') {
+    return { ...defaults };
+  }
+
+  try {
+    const stored = localStorage.getItem(ORB_STORAGE_KEY);
+    if (!stored) {
+      return { ...defaults };
+    }
+
+    const parsed = JSON.parse(stored);
+    return sanitizeOrbSettings(parsed);
+  } catch (error) {
+    console.warn('Unable to load orb settings', error);
+    return { ...defaults };
+  }
+}
+
+function persistOrbSettings(settings) {
+  if (typeof window === 'undefined' || typeof localStorage === 'undefined') {
+    return;
+  }
+
+  try {
+    localStorage.setItem(ORB_STORAGE_KEY, JSON.stringify(settings));
+  } catch (error) {
+    console.warn('Unable to save orb settings', error);
+  }
+}
+
+function sanitizeOrbSettings(raw) {
+  const defaults = getDefaultOrbSettings();
+  const sanitized = {};
+
+  ORB_TARGETS.forEach((target) => {
+    const fallback = defaults[target].hue;
+    sanitized[target] = {
+      hue: normalizeHueValue(raw?.[target]?.hue, fallback)
+    };
+  });
+
+  return sanitized;
+}
+
+function getDefaultOrbSettings() {
+  return {
+    claude: { hue: 260 },
+    guest: { hue: 330 }
+  };
+}
+
+function normalizeHueValue(value, fallback) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return fallback;
+  }
+
+  const normalized = ((numeric % 360) + 360) % 360;
+  return Math.round(normalized * 1000) / 1000;
+}
+
 function updateTimer() {
-  if (!sessionStartTime) return;
+  if (!sessionStartTime || !timerEl) return;
   const elapsed = Date.now() - sessionStartTime;
   const minutes = Math.floor(elapsed / 60000);
   const seconds = Math.floor((elapsed % 60000) / 1000);
@@ -243,21 +597,26 @@ function updateTimer() {
 
 function setTalkButtonState(target, state) {
   const button = target === 'claude' ? talkClaudeBtn : talkGuestBtn;
+  if (!button) return;
   button.classList.remove('state-idle', 'state-recording', 'state-sending');
   button.classList.add(`state-${state}`);
 }
 
 function updateTurnCount() {
   turnCount += 1;
-  turnCountEl.textContent = `${turnCount} turn${turnCount === 1 ? '' : 's'}`;
+  if (turnCountEl) {
+    turnCountEl.textContent = `${turnCount} turn${turnCount === 1 ? '' : 's'}`;
+  }
   if (transcriptEmptyEl && turnCount > 0) {
     transcriptEmptyEl.style.display = 'none';
   }
 }
 
 function refreshTalkButtons() {
+  if (!talkClaudeBtn && !talkGuestBtn) return;
   ['claude', 'guest'].forEach((target) => {
     const button = target === 'claude' ? talkClaudeBtn : talkGuestBtn;
+    if (!button) return;
     const isActive = activeTarget === target;
     const state = isActive ? talkState : 'idle';
     button.classList.remove('state-idle', 'state-recording', 'state-sending');
@@ -271,6 +630,7 @@ function refreshTalkButtons() {
 }
 
 function appendLogEntry(speaker, text) {
+  if (!logTemplate || !logContainer) return;
   const fragment = logTemplate.content.cloneNode(true);
 
   // Set avatar emoji based on speaker

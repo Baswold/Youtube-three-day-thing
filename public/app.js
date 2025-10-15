@@ -1,3 +1,5 @@
+import { HANDS_FREE_DEFAULTS, createHandsFreeState } from './handsFreeState.mjs';
+
 const startBtn = document.getElementById('startSession');
 const stopBtn = document.getElementById('stopSession');
 const talkClaudeBtn = document.getElementById('talkClaude');
@@ -5,6 +7,8 @@ const talkGuestBtn = document.getElementById('talkGuest');
 const timerEl = document.getElementById('timer');
 const claudeStatusEl = document.getElementById('claudeStatus');
 const guestStatusEl = document.getElementById('guestStatus');
+const claudeActivityEl = document.getElementById('claudeActivity');
+const guestActivityEl = document.getElementById('guestActivity');
 const logContainer = document.getElementById('log');
 const logTemplate = document.getElementById('logEntry');
 const exportStatusEl = document.getElementById('exportStatus');
@@ -21,8 +25,8 @@ const guestCtx = guestCanvas.getContext('2d');
 
 let audioContext;
 let mediaStream;
-let snippetRecorder;
-let snippetChunks = [];
+let activeSnippet = null;
+let snippetSequence = 0;
 let claudeDestination;
 let guestDestination;
 let claudeAnalyser;
@@ -36,6 +40,30 @@ let talkState = 'idle';
 let sessionActive = false;
 let healthStatus = { openai: false, anthropic: false };
 let turnCount = 0;
+
+const HANDS_FREE_ENABLED = true;
+const HANDS_FREE_SETTINGS = {
+  ...HANDS_FREE_DEFAULTS,
+  startThreshold: 0.02,
+  stopThreshold: 0.008,
+  minSpeechMs: 200,
+  minSilenceMs: 220,
+  minGapMs: 0,
+};
+
+let inputSource;
+let inputAnalyser;
+let inputDataArray;
+let voiceMonitorId;
+let autoSpeechStart = null;
+let autoSilenceStart = null;
+let autoRecordingActive = false;
+let lastHandsFreeStop = 0;
+const handsFreeState = createHandsFreeState();
+const sendingTargets = new Set();
+const inFlightSnippets = new Set();
+let pendingManualStart = null;
+const activePlaybackSources = new Set();
 
 const generateSessionId = () =>
   (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2));
@@ -82,53 +110,53 @@ function checkBrowserCompatibility() {
 async function checkHealth() {
   systemStatusEl.querySelector('.status-text').textContent = 'Checking...';
   systemStatusEl.classList.remove('healthy', 'error');
-  
+
   try {
     const response = await fetch('/api/health');
-    if (response.ok) {
-      const data = await response.json();
-      healthStatus = { openai: data.openai, anthropic: data.anthropic };
-      
-      if (!healthStatus.openai || !healthStatus.anthropic) {
-        const missing = [];
-        if (!healthStatus.openai) missing.push('OpenAI');
-        if (!healthStatus.anthropic) missing.push('Anthropic');
-        systemStatusEl.querySelector('.status-text').textContent = `Missing: ${missing.join(', ')}`;
-        systemStatusEl.classList.add('error');
-        exportStatusEl.textContent = `⚠️ Missing API keys: ${missing.join(', ')}. Check your .env file.`;
-        exportStatusEl.style.color = 'var(--danger)';
-        startBtn.disabled = true;
-        return false;
-      }
-      systemStatusEl.querySelector('.status-text').textContent = 'Ready';
-      systemStatusEl.classList.add('healthy');
-      exportStatusEl.textContent = '';
-      exportStatusEl.style.color = '';
-      return true;
+    if (!response.ok) {
+      throw new Error('Health check request failed');
     }
+
+    const data = await response.json();
+    healthStatus = { openai: Boolean(data.openai), anthropic: Boolean(data.anthropic) };
+    handsFreeState.setHealth(healthStatus);
+
+    const missing = [];
+    if (!healthStatus.openai) missing.push('OpenAI');
+    if (!healthStatus.anthropic) missing.push('Anthropic');
+
+    if (missing.length > 0) {
+      systemStatusEl.querySelector('.status-text').textContent = `Partial: missing ${missing.join(', ')}`;
+      systemStatusEl.classList.add('error');
+      exportStatusEl.textContent = `⚠️ Responses from ${missing.join(' & ')} are unavailable. You can still run the session with the remaining voices.`;
+      exportStatusEl.style.color = 'var(--warning)';
+      return { status: missing.length === 2 ? 'unavailable' : 'partial', missing };
+    }
+
+    systemStatusEl.querySelector('.status-text').textContent = 'Ready';
+    systemStatusEl.classList.add('healthy');
+    exportStatusEl.textContent = '';
+    exportStatusEl.style.color = '';
+    return { status: 'ready', missing: [] };
   } catch (err) {
     console.error('Health check failed', err);
+    healthStatus = { openai: false, anthropic: false };
+    handsFreeState.setHealth(healthStatus);
     systemStatusEl.querySelector('.status-text').textContent = 'Server offline';
     systemStatusEl.classList.add('error');
-    exportStatusEl.textContent = '⚠️ Cannot reach server';
+    exportStatusEl.textContent = '⚠️ Cannot reach server. You can still record freely, but AI replies may fail.';
     exportStatusEl.style.color = 'var(--danger)';
-    startBtn.disabled = true;
-    return false;
+    return { status: 'error', missing: ['OpenAI', 'Anthropic'] };
   }
-  return false;
 }
 
 async function startSession() {
   if (sessionActive) return;
-  
-  const healthy = await checkHealth();
-  if (!healthy) {
-    startBtn.disabled = false;
-    return;
-  }
-  
+
+  startBtn.disabled = true;
+  const health = await checkHealth();
+
   try {
-    startBtn.disabled = true;
     exportStatusEl.textContent = '';
     exportStatusEl.style.color = '';
     turnCount = 0;
@@ -146,6 +174,8 @@ async function startSession() {
     setupAnalysers();
     setupAudioDestinations();
     startAnalysers();
+    resetAutoTargetOrder();
+    setupHandsFreeInput();
 
     sessionStartTime = Date.now();
     sessionTimer = setInterval(updateTimer, 500);
@@ -161,16 +191,27 @@ async function startSession() {
     
     activeTarget = null;
     talkState = 'idle';
+    activeSnippet = null;
+    pendingManualStart = null;
+    sendingTargets.clear();
+    inFlightSnippets.clear();
 
     sessionActive = true;
     stopBtn.disabled = false;
     refreshTalkButtons();
     setTargetStatus('claude', 'Idle', false);
     setTargetStatus('guest', 'Idle', false);
-    
-    // Show recording setup reminder
-    exportStatusEl.textContent = '🎥 Ready! Start your screen recording software now.';
-    exportStatusEl.style.color = 'var(--success)';
+
+    if (health.status === 'partial') {
+      exportStatusEl.textContent = '🎙️ Hands-free is live. Some voices are offline, but everyone else can speak freely.';
+      exportStatusEl.style.color = 'var(--warning)';
+    } else if (health.status === 'error' || health.status === 'unavailable') {
+      exportStatusEl.textContent = '⚠️ Starting in free-talk mode. AI responses may fail until the server reconnects.';
+      exportStatusEl.style.color = 'var(--danger)';
+    } else {
+      exportStatusEl.textContent = '🎥 Ready! Start your screen recording software now. 🎙️ Hands-free mode is active—just start speaking when you are ready.';
+      exportStatusEl.style.color = 'var(--success)';
+    }
   } catch (err) {
     console.error('Failed to start session', err);
     exportStatusEl.textContent = '⚠️ Could not access microphone. Check permissions.';
@@ -186,13 +227,19 @@ function stopSession() {
   talkClaudeBtn.disabled = true;
   talkGuestBtn.disabled = true;
 
+  teardownHandsFreeInput();
+
   if (sessionTimer) {
     clearInterval(sessionTimer);
     sessionTimer = null;
   }
 
-  if (snippetRecorder && snippetRecorder.state !== 'inactive') {
-    snippetRecorder.stop();
+  if (activeSnippet?.recorder && activeSnippet.recorder.state !== 'inactive') {
+    try {
+      activeSnippet.recorder.stop();
+    } catch (err) {
+      console.warn('Failed to stop recorder during teardown', err);
+    }
   }
 
   if (mediaStream) {
@@ -209,6 +256,12 @@ function stopSession() {
   sessionId = null;
   activeTarget = null;
   talkState = 'idle';
+  activeSnippet = null;
+  pendingManualStart = null;
+  sendingTargets.clear();
+  inFlightSnippets.clear();
+  stopActivePlayback();
+  handsFreeState.resetOrder();
   refreshTalkButtons();
   setTargetStatus('claude', 'Idle', false);
   setTargetStatus('guest', 'Idle', false);
@@ -421,15 +474,17 @@ function updateTurnCount() {
 function refreshTalkButtons() {
   ['claude', 'guest'].forEach((target) => {
     const button = target === 'claude' ? talkClaudeBtn : talkGuestBtn;
-    const isActive = activeTarget === target;
-    const state = isActive ? talkState : 'idle';
+    const isRecording = activeSnippet && activeSnippet.target === target;
+    const isSending = sendingTargets.has(target);
+    const state = isRecording ? 'recording' : isSending ? 'sending' : 'idle';
     button.classList.remove('state-idle', 'state-recording', 'state-sending');
     button.classList.add(`state-${state}`);
     const disable =
       !sessionActive ||
-      (activeTarget !== null && activeTarget !== target) ||
-      (isActive && talkState === 'sending');
+      (activeSnippet && activeSnippet.target !== target && activeSnippet.recorder?.state === 'recording');
     button.disabled = disable;
+    button.setAttribute('aria-disabled', disable ? 'true' : 'false');
+    button.classList.toggle('hands-free-mode', HANDS_FREE_ENABLED);
   });
 }
 
@@ -474,71 +529,123 @@ function setTargetStatus(target, text, accent = false) {
   statusEl.style.background = accent
     ? 'rgba(94, 122, 255, 0.25)'
     : 'rgba(255, 255, 255, 0.08)';
+  const activityEl = target === 'claude' ? claudeActivityEl : guestActivityEl;
+  if (activityEl) {
+    activityEl.textContent = text;
+  }
 }
 
 function handleTalk(target) {
   if (!sessionActive) return;
 
-  if (activeTarget === null && talkState === 'idle') {
-    startSnippetRecording(target);
+  if (activeSnippet && activeSnippet.target === target) {
+    if (activeSnippet.recorder?.state === 'recording') {
+      stopSnippetRecording();
+    }
     return;
   }
 
-  if (activeTarget === target && talkState === 'recording') {
+  if (activeSnippet && activeSnippet.recorder?.state === 'recording') {
+    pendingManualStart = target;
     stopSnippetRecording();
+    return;
   }
+
+  startSnippetRecording(target);
 }
 
 function startSnippetRecording(target) {
   if (!mediaStream) return;
 
-  activeTarget = target;
-  talkState = 'recording';
-  snippetChunks = [];
+  stopActivePlayback();
 
   const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
     ? 'audio/webm;codecs=opus'
     : undefined;
 
-  snippetRecorder = new MediaRecorder(mediaStream, mimeType ? { mimeType } : undefined);
-  snippetRecorder.ondataavailable = (event) => {
+  const recorder = new MediaRecorder(mediaStream, mimeType ? { mimeType } : undefined);
+  const snippetId = ++snippetSequence;
+  const snippet = {
+    id: snippetId,
+    target,
+    recorder,
+    chunks: [],
+    mimeType: recorder.mimeType || mimeType || 'audio/webm',
+  };
+
+  activeSnippet = snippet;
+  activeTarget = target;
+  talkState = 'recording';
+  pendingManualStart = null;
+  const alternateTarget = target === 'claude' ? 'guest' : 'claude';
+  handsFreeState.setNextAutoTarget(alternateTarget);
+
+  recorder.ondataavailable = (event) => {
     if (event.data && event.data.size > 0) {
-      snippetChunks.push(event.data);
+      snippet.chunks.push(event.data);
     }
   };
 
-  snippetRecorder.onstop = () => {
-    const targetSnapshot = activeTarget;
-    sendSnippet(targetSnapshot);
+  recorder.onstop = () => {
+    const payload = {
+      id: snippet.id,
+      target: snippet.target,
+      mimeType: snippet.mimeType,
+      chunks: snippet.chunks.slice(),
+    };
+
+    autoRecordingActive = false;
+    autoSilenceStart = null;
+    sendingTargets.add(snippet.target);
+    inFlightSnippets.add(snippet.id);
+
+    if (activeSnippet && activeSnippet.id === snippet.id) {
+      activeSnippet = null;
+    }
+
+    talkState = activeSnippet ? 'recording' : 'sending';
+    setTalkButtonState(snippet.target, 'sending');
+    refreshTalkButtons();
+    setTargetStatus(snippet.target, 'Processing…', true);
+
+    sendSnippet(payload);
+
+    if (pendingManualStart) {
+      const nextTarget = pendingManualStart;
+      pendingManualStart = null;
+      startSnippetRecording(nextTarget);
+    }
   };
 
-  snippetRecorder.start();
+  recorder.start();
   setTalkButtonState(target, 'recording');
   refreshTalkButtons();
   setTargetStatus(target, 'Listening…', true);
 }
 
 function stopSnippetRecording() {
-  if (snippetRecorder && snippetRecorder.state !== 'inactive') {
-    snippetRecorder.stop();
+  if (activeSnippet?.recorder && activeSnippet.recorder.state !== 'inactive') {
+    try {
+      activeSnippet.recorder.stop();
+    } catch (err) {
+      console.warn('Failed to stop snippet recorder', err);
+    }
   }
-  talkState = 'sending';
-  if (activeTarget) {
-    setTalkButtonState(activeTarget, 'sending');
-    setTargetStatus(activeTarget, 'Processing…', true);
-  }
-  refreshTalkButtons();
+  autoRecordingActive = false;
+  autoSilenceStart = null;
 }
 
-async function sendSnippet(target) {
+async function sendSnippet(snippet) {
+  const { target, chunks, mimeType, id } = snippet;
   const config = TARGET_CONFIG[target];
   if (!config) {
     console.error('Unknown conversation target', target);
+    finalizeSnippet(id, target);
     return;
   }
 
   try {
-    const snippetBlob = new Blob(snippetChunks, { type: snippetRecorder?.mimeType || 'audio/webm' });
+    const snippetBlob = new Blob(chunks, { type: mimeType || 'audio/webm' });
     appendLogEntry('Basil', `[Audio clip sent to ${config.label}]`);
 
     if (!sessionId) {
@@ -581,17 +688,174 @@ async function sendSnippet(target) {
     exportStatusEl.textContent = `${config.label} error: ${err.message}`;
     setTargetStatus(target, 'Error', false);
   } finally {
-    snippetRecorder = null;
-    snippetChunks = [];
+    finalizeSnippet(id, target);
+  }
+}
+
+function finalizeSnippet(id, target) {
+  inFlightSnippets.delete(id);
+  sendingTargets.delete(target);
+
+  if (!activeSnippet && inFlightSnippets.size === 0) {
     talkState = 'idle';
     activeTarget = null;
-    refreshTalkButtons();
+  } else if (!activeSnippet && activeTarget === target && !sendingTargets.has(target)) {
+    activeTarget = null;
   }
+
+  refreshTalkButtons();
+}
+
+function stopActivePlayback() {
+  if (activePlaybackSources.size === 0) return;
+  const handles = Array.from(activePlaybackSources);
+  activePlaybackSources.clear();
+  handles.forEach(({ source, gainNode }) => {
+    try {
+      source.stop(0);
+    } catch (err) {
+      console.warn('Failed to stop playback source', err);
+    }
+    try {
+      gainNode.disconnect();
+    } catch (err) {
+      console.warn('Failed to disconnect playback gain node', err);
+    }
+  });
+}
+
+function resetAutoTargetOrder() {
+  if (!HANDS_FREE_ENABLED) return;
+  handsFreeState.resetOrder();
+  lastHandsFreeStop = performance.now();
+}
+
+function setupHandsFreeInput() {
+  if (!HANDS_FREE_ENABLED) return;
+  if (!audioContext || !mediaStream) return;
+
+  teardownHandsFreeInput();
+
+  try {
+    inputSource = audioContext.createMediaStreamSource(mediaStream);
+    inputAnalyser = audioContext.createAnalyser();
+    inputAnalyser.fftSize = 2048;
+    inputSource.connect(inputAnalyser);
+    inputDataArray = new Float32Array(inputAnalyser.fftSize);
+  } catch (err) {
+    console.error('Failed to initialise hands-free input monitoring', err);
+    inputSource = null;
+    inputAnalyser = null;
+    inputDataArray = null;
+    return;
+  }
+
+  autoSpeechStart = null;
+  autoSilenceStart = null;
+  autoRecordingActive = false;
+  lastHandsFreeStop = performance.now();
+  monitorHandsFreeInput();
+}
+
+function teardownHandsFreeInput() {
+  if (!HANDS_FREE_ENABLED) return;
+  if (voiceMonitorId) {
+    cancelAnimationFrame(voiceMonitorId);
+    voiceMonitorId = null;
+  }
+  if (inputSource) {
+    try {
+      inputSource.disconnect();
+    } catch (err) {
+      console.warn('Failed to disconnect hands-free source', err);
+    }
+    inputSource = null;
+  }
+  inputAnalyser = null;
+  inputDataArray = null;
+  autoSpeechStart = null;
+  autoSilenceStart = null;
+  autoRecordingActive = false;
+}
+
+function monitorHandsFreeInput() {
+  if (!HANDS_FREE_ENABLED) return;
+
+  if (!inputAnalyser || !inputDataArray) {
+    voiceMonitorId = requestAnimationFrame(monitorHandsFreeInput);
+    return;
+  }
+
+  inputAnalyser.getFloatTimeDomainData(inputDataArray);
+
+  let sumSquares = 0;
+  for (let i = 0; i < inputDataArray.length; i += 1) {
+    const sample = inputDataArray[i];
+    sumSquares += sample * sample;
+  }
+  const rms = Math.sqrt(sumSquares / inputDataArray.length);
+  const now = performance.now();
+
+  if (!autoRecordingActive) {
+    const snippetBusy = Boolean(activeSnippet);
+    if (
+      sessionActive &&
+      !snippetBusy &&
+      now - lastHandsFreeStop >= HANDS_FREE_SETTINGS.minGapMs
+    ) {
+      if (rms > HANDS_FREE_SETTINGS.startThreshold) {
+        if (!autoSpeechStart) {
+          autoSpeechStart = now;
+        } else if (now - autoSpeechStart >= HANDS_FREE_SETTINGS.minSpeechMs) {
+          const target = determineHandsFreeTarget();
+          if (target) {
+            try {
+              startSnippetRecording(target);
+              autoRecordingActive = true;
+              autoSilenceStart = null;
+            } catch (err) {
+              console.error('Hands-free start failed', err);
+              autoRecordingActive = false;
+              lastHandsFreeStop = now;
+            }
+          }
+          autoSpeechStart = null;
+        }
+      } else {
+        autoSpeechStart = null;
+      }
+    } else {
+      autoSpeechStart = null;
+    }
+  } else {
+    if (rms < HANDS_FREE_SETTINGS.stopThreshold) {
+      if (!autoSilenceStart) {
+        autoSilenceStart = now;
+      } else if (now - autoSilenceStart >= HANDS_FREE_SETTINGS.minSilenceMs) {
+        autoRecordingActive = false;
+        autoSilenceStart = null;
+        lastHandsFreeStop = now;
+        stopSnippetRecording();
+      }
+    } else {
+      autoSilenceStart = null;
+    }
+  }
+
+  voiceMonitorId = requestAnimationFrame(monitorHandsFreeInput);
+}
+
+function determineHandsFreeTarget() {
+  if (!HANDS_FREE_ENABLED) return null;
+
+  return handsFreeState.chooseNextTarget();
 }
 
 async function playAiAudio(base64, target, mimeType = 'audio/wav') {
   if (!audioContext) return;
   if (!base64) return;
+
+  stopActivePlayback();
 
   const binary = atob(base64);
   const len = binary.length;
@@ -619,12 +883,19 @@ async function playAiAudio(base64, target, mimeType = 'audio/wav') {
   }
 
   gainNode.connect(audioContext.destination);
-  
+
   // Cleanup after playback
+  const playbackHandle = { source, gainNode };
+  activePlaybackSources.add(playbackHandle);
   source.onended = () => {
-    gainNode.disconnect();
+    try {
+      gainNode.disconnect();
+    } catch (err) {
+      console.warn('Failed to disconnect playback gain node', err);
+    }
+    activePlaybackSources.delete(playbackHandle);
   };
-  
+
   source.start();
 }
 
