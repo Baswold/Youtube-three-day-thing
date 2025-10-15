@@ -6,6 +6,20 @@ const SESSION_TTL_MS = config.session.ttlMs;
 const MAX_HISTORY_LENGTH = config.session.maxHistory;
 const MAX_SESSIONS = config.session.maxSessions;
 
+function enforceSessionLimit() {
+  if (sessions.size <= MAX_SESSIONS) {
+    return;
+  }
+
+  const sorted = Array.from(sessions.entries()).sort((a, b) => a[1].updatedAt - b[1].updatedAt);
+  const toRemove = sorted.slice(0, sessions.size - MAX_SESSIONS);
+  toRemove.forEach(([id]) => sessions.delete(id));
+
+  if (toRemove.length > 0) {
+    console.log(`[SessionStore] Evicted ${toRemove.length} oldest session(s) (over limit)`);
+  }
+}
+
 function normalizeId(sessionId) {
   return sessionId ? String(sessionId) : 'default';
 }
@@ -26,13 +40,7 @@ function cleanupStale() {
     console.log(`[SessionStore] Cleaned up ${stale.length} stale session(s)`);
   }
 
-  // If still over limit, remove oldest sessions
-  if (sessions.size > MAX_SESSIONS) {
-    const sorted = Array.from(sessions.entries()).sort((a, b) => a[1].updatedAt - b[1].updatedAt);
-    const toRemove = sorted.slice(0, sessions.size - MAX_SESSIONS);
-    toRemove.forEach(([id]) => sessions.delete(id));
-    console.log(`[SessionStore] Evicted ${toRemove.length} oldest session(s) (over limit)`);
-  }
+  enforceSessionLimit();
 }
 
 function ensureSession(sessionId) {
@@ -49,6 +57,7 @@ function ensureSession(sessionId) {
   }
   const session = sessions.get(id);
   session.updatedAt = Date.now();
+  enforceSessionLimit();
   return session;
 }
 
